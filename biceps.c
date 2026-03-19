@@ -1,6 +1,3 @@
-/* biceps.c : Bel Interpreteur de Commandes des Etudiants de Polytech Sorbonne
-   Version 0.1 - Etape 1 : programme interactif avec readline */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,16 +5,19 @@
 #include <unistd.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <sys/wait.h>
+
+#define MAX_ARGS 100
 
 int main(void)
 {
-    char  *buf    = NULL;
+    char  *buf = NULL;
     char   host[256];
     char  *user;
     char  *prompt;
     int    len;
 
-    /* --- Construction dynamique du prompt (malloc) --- */
+    /* --- Construction du prompt --- */
     if (gethostname(host, sizeof(host)) != 0) {
         perror("gethostname");
         strcpy(host, "localhost");
@@ -26,34 +26,63 @@ int main(void)
     user = getenv("USER");
     if (user == NULL) user = "inconnu";
 
-    /* format : "user@machine# " (root) ou "user@machine$ " (autres) */
-    /* taille = len(user) + 1(@) + len(host) + 1(symbole) + 1(espace) + 1(\0) */
     len = strlen(user) + 1 + strlen(host) + 1 + 1 + 1;
     prompt = malloc(len);
     if (prompt == NULL) {
         perror("malloc");
         return 1;
     }
+
     sprintf(prompt, "%s@%s%c ", user, host,
             (geteuid() == 0) ? '#' : '$');
 
-    /* --- Boucle principale de saisie --- */
+    /* --- Boucle principale --- */
     while (1) {
         buf = readline(prompt);
 
-        /* readline renvoie NULL sur Ctrl-D (EOF) */
         if (buf == NULL) {
             printf("\nBye !\n");
             break;
         }
 
-        /* Affichage de la commande saisie (comportement etape 1) */
         if (strlen(buf) > 0) {
             add_history(buf);
-            printf("Commande : %s\n", buf);
+
+            /* --- Parsing des arguments --- */
+            char *args[MAX_ARGS];
+            int i = 0;
+
+            char *token = strtok(buf, " ");
+            while (token != NULL && i < MAX_ARGS - 1) {
+                args[i++] = token;
+                token = strtok(NULL, " ");
+            }
+            args[i] = NULL;
+
+            /* --- Commande interne exit --- */
+            if (strcmp(args[0], "exit") == 0) {
+                free(buf);
+                break;
+            }
+
+            /* --- fork + exec --- */
+            pid_t pid = fork();
+
+            if (pid < 0) {
+                perror("fork");
+            }
+            else if (pid == 0) {
+                /* processus fils */
+                execvp(args[0], args);
+                perror("execvp"); // si erreur
+                exit(EXIT_FAILURE);
+            }
+            else {
+                /* processus père */
+                wait(NULL);
+            }
         }
 
-        /* readline alloue la memoire : il faut la liberer */
         free(buf);
         buf = NULL;
     }
