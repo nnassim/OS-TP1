@@ -1,52 +1,61 @@
+/* biceps.c : Bel Interpreteur de Commandes des Etudiants de Polytech Sorbonne
+   Version 0.1 - Etape 1 : programme interactif avec readline */
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/types.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
-int main(int argc, char *argv[]) {
-    char *buf = NULL;
-    char host[64];
-    char *user;
-    char *prompt;
+int main(void)
+{
+    char  *buf    = NULL;
+    char   host[256];
+    char  *user;
+    char  *prompt;
+    int    len;
 
-    /* 1.1 Nom de la machine */
-    gethostname(host, sizeof(host));
+    /* --- Construction dynamique du prompt (malloc) --- */
+    if (gethostname(host, sizeof(host)) != 0) {
+        perror("gethostname");
+        strcpy(host, "localhost");
+    }
 
-    /* 1.2 Nom de l'utilisateur */
     user = getenv("USER");
     if (user == NULL) user = "inconnu";
 
-    /* 1.3 Construction du prompt */
-    prompt = malloc(128);
-    /* geteuid() retourne l'UID effectif, plus correct que getuid() pour un shell */
-    char symbole = (geteuid() == 0) ? '#' : '$';
-    sprintf(prompt, "%s@%s%c ", user, host, symbole);
+    /* format : "user@machine# " (root) ou "user@machine$ " (autres) */
+    /* taille = len(user) + 1(@) + len(host) + 1(symbole) + 1(espace) + 1(\0) */
+    len = strlen(user) + 1 + strlen(host) + 1 + 1 + 1;
+    prompt = malloc(len);
+    if (prompt == NULL) {
+        perror("malloc");
+        return 1;
+    }
+    sprintf(prompt, "%s@%s%c ", user, host,
+            (geteuid() == 0) ? '#' : '$');
 
-    printf("Demarrage du shell biceps...\n");
-
-    /* 1.4 Boucle de lecture */
+    /* --- Boucle principale de saisie --- */
     while (1) {
         buf = readline(prompt);
 
-        /* Gestion du Ctrl-D (EOF) */
+        /* readline renvoie NULL sur Ctrl-D (EOF) */
         if (buf == NULL) {
-            printf("\nBye!\n");
+            printf("\nBye !\n");
             break;
         }
 
-        /* Si la ligne n'est pas vide, on l'ajoute a l'historique */
+        /* Affichage de la commande saisie (comportement etape 1) */
         if (strlen(buf) > 0) {
             add_history(buf);
-            /* Pour l'etape 1, on affiche juste la saisie */
-            printf("Saisie : %s\n", buf);
+            printf("Commande : %s\n", buf);
         }
 
-        /* Tres important : readline alloue de la memoire qu'il faut liberer */
+        /* readline alloue la memoire : il faut la liberer */
         free(buf);
+        buf = NULL;
     }
 
     free(prompt);
