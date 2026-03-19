@@ -11,7 +11,7 @@
 #define MAX_ARGS 100
 #define MAX_CMDS 10
 
-/* --- split commandes par | --- */
+/* --- split commandes --- */
 int split_commands(char *line, char *cmds[]) {
     int i = 0;
     char *saveptr;
@@ -25,11 +25,12 @@ int split_commands(char *line, char *cmds[]) {
     return i;
 }
 
-/* --- parsing arguments + redirections --- */
-void parse_args(char *cmd, char *args[], char **in, char **out) {
+/* --- parsing amélioré (>>, guillemets) --- */
+void parse_args(char *cmd, char *args[], char **in, char **out, int *append) {
     int i = 0;
     *in = NULL;
     *out = NULL;
+    *append = 0;
 
     char *saveptr;
     char *token = strtok_r(cmd, " \t", &saveptr);
@@ -42,10 +43,29 @@ void parse_args(char *cmd, char *args[], char **in, char **out) {
         else if (strcmp(token, ">") == 0) {
             token = strtok_r(NULL, " \t", &saveptr);
             if (token) *out = token;
+            *append = 0;
+        }
+        else if (strcmp(token, ">>") == 0) {
+            token = strtok_r(NULL, " \t", &saveptr);
+            if (token) *out = token;
+            *append = 1;
         }
         else {
-            args[i++] = token;
+            /* gestion guillemets simples */
+            if (token[0] == '"') {
+                char *full = strdup(token);
+                while (full[strlen(full)-1] != '"' && (token = strtok_r(NULL, " \t", &saveptr))) {
+                    full = realloc(full, strlen(full) + strlen(token) + 2);
+                    strcat(full, " ");
+                    strcat(full, token);
+                }
+                full[strlen(full)-1] = '\0'; // enlever "
+                args[i++] = full + 1; // enlever premier "
+            } else {
+                args[i++] = token;
+            }
         }
+
         token = strtok_r(NULL, " \t", &saveptr);
     }
 
@@ -58,24 +78,17 @@ int main(void)
     char host[256], *user, *prompt;
     int len;
 
-    /* --- prompt --- */
     gethostname(host, sizeof(host));
     user = getenv("USER");
     if (!user) user = "user";
 
     len = strlen(user) + strlen(host) + 4;
     prompt = malloc(len);
-    if (!prompt) {
-        perror("malloc");
-        exit(1);
-    }
-
     sprintf(prompt, "%s@%s$ ", user, host);
 
     while (1) {
         buf = readline(prompt);
 
-        /* Ctrl+D */
         if (!buf) {
             printf("\nBye !\n");
             break;
@@ -88,53 +101,33 @@ int main(void)
 
         add_history(buf);
 
-        /* ⚠️ copie pour éviter corruption strtok */
         char *buf_copy = strdup(buf);
-        if (!buf_copy) {
-            perror("strdup");
-            free(buf);
-            continue;
-        }
 
         char *cmds[MAX_CMDS];
         int n = split_commands(buf_copy, cmds);
 
-        /* --- cd + exit --- */
+        /* cd + exit */
         if (n == 1) {
             char *cmd_copy = strdup(cmds[0]);
-            if (!cmd_copy) {
-                perror("strdup");
-                free(buf_copy);
-                free(buf);
-                continue;
-            }
 
             char *args[MAX_ARGS];
             char *in = NULL, *out = NULL;
+            int append = 0;
 
-            parse_args(cmd_copy, args, &in, &out);
+            parse_args(cmd_copy, args, &in, &out, &append);
 
             if (args[0]) {
-                /* cd */
                 if (strcmp(args[0], "cd") == 0) {
-                    if (args[1]) {
-                        if (chdir(args[1]) != 0)
-                            perror("cd");
-                    } else {
-                        fprintf(stderr, "cd: argument manquant\n");
-                    }
-                    free(cmd_copy);
-                    free(buf_copy);
-                    free(buf);
+                    if (args[1]) chdir(args[1]);
+                    else fprintf(stderr, "cd: argument manquant\n");
+
+                    free(cmd_copy); free(buf_copy); free(buf);
                     continue;
                 }
 
-                /* exit */
                 if (strcmp(args[0], "exit") == 0) {
                     printf("Bye !\n");
-                    free(cmd_copy);
-                    free(buf_copy);
-                    free(buf);
+                    free(cmd_copy); free(buf_copy); free(buf);
                     break;
                 }
             }
@@ -147,64 +140,46 @@ int main(void)
         for (int i = 0; i < n; i++) {
             int pipefd[2];
 
-            if (i < n - 1) {
-                if (pipe(pipefd) < 0) {
-                    perror("pipe");
-                    exit(1);
-                }
-            }
+            if (i < n - 1)
+                pipe(pipefd);
 
             pid_t pid = fork();
 
-            if (pid < 0) {
-                perror("fork");
-                exit(1);
-            }
-
             if (pid == 0) {
                 char *cmd_copy = strdup(cmds[i]);
-                if (!cmd_copy) {
-                    perror("strdup");
-                    exit(1);
-                }
 
                 char *args[MAX_ARGS];
                 char *in = NULL, *out = NULL;
+                int append = 0;
 
-                parse_args(cmd_copy, args, &in, &out);
+                parse_args(cmd_copy, args, &in, &out, &append);
 
-                if (args[0] == NULL)
-                    exit(0);
+                if (!args[0]) exit(0);
 
-                /* redirection entrée */
+                /* input */
                 if (in) {
                     int fd = open(in, O_RDONLY);
-                    if (fd < 0) {
-                        perror("open input");
-                        exit(1);
-                    }
                     dup2(fd, STDIN_FILENO);
                     close(fd);
                 }
 
-                /* redirection sortie */
+                /* output */
                 if (out) {
-                    int fd = open(out, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-                    if (fd < 0) {
-                        perror("open output");
-                        exit(1);
-                    }
+                    int fd;
+                    if (append)
+                        fd = open(out, O_CREAT | O_WRONLY | O_APPEND, 0644);
+                    else
+                        fd = open(out, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+
                     dup2(fd, STDOUT_FILENO);
                     close(fd);
                 }
 
-                /* pipe entrée */
                 if (prev_fd != -1) {
                     dup2(prev_fd, STDIN_FILENO);
                     close(prev_fd);
                 }
 
-                /* pipe sortie */
                 if (i < n - 1) {
                     close(pipefd[0]);
                     dup2(pipefd[1], STDOUT_FILENO);
@@ -216,7 +191,6 @@ int main(void)
                 exit(1);
             }
 
-            /* parent */
             if (prev_fd != -1)
                 close(prev_fd);
 
@@ -226,7 +200,6 @@ int main(void)
             }
         }
 
-        /* attendre tous les fils */
         for (int i = 0; i < n; i++)
             wait(NULL);
 
